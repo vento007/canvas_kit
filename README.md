@@ -6,9 +6,9 @@
 
 <div align="center">
 
-<h1 align="center">🖼️ Canvas Kit</h1>
+<h1 align="center">Canvas Kit — Infinite Canvas for Flutter</h1>
 
-<p align="center"><em>Composable pan/zoom canvas for Flutter with interactive and programmatic camera control</em></p>
+<p align="center"><em>Composable infinite pan/zoom canvas for Flutter with interactive and programmatic camera control</em></p>
 
 <p align="center">
   <a href="https://pub.dev/packages/canvas_kit">
