@@ -1,3 +1,9 @@
+## 0.5.1+1 - 2025-09-08
+
+Docs and publishing fixes:
+- README: switch logo and demo GIF to raw GitHub URLs so they render on pub.dev
+- README: add "Quick Demo" section and badges/header tweaks
+
 ## 0.5.1 - 2025-09-07
 
 Initial public preview of Canvas Kit.
