@@ -1,7 +1,7 @@
 <!-- README header -->
 
 <div align="center">
-  <img src="canvas_kit_logo.png" alt="Canvas Kit Logo" width="300"/>
+  <img src="https://raw.githubusercontent.com/vento007/canvas_kit/main/canvas_kit_logo.png" alt="Canvas Kit Logo" width="300"/>
 </div>
 <div align="center">
 
@@ -45,7 +45,7 @@
 # Quick Demo
 
 <div align="center">
-  <img src="media/canvas_kit_git_optimized.gif" alt="Canvas Kit demo: infinite pan/zoom with draggable items and bounds" width="900"/>
+  <img src="https://raw.githubusercontent.com/vento007/canvas_kit/main/media/canvas_kit_git_optimized.gif" alt="Canvas Kit demo: infinite pan/zoom with draggable items and bounds" width="900"/>
 </div>
 
 # Canvas Kit User Guide
