@@ -3,15 +3,6 @@
 <div align="center">
   <img src="canvas_kit_logo.png" alt="Canvas Kit Logo" width="300"/>
 </div>
-
-# Quick Demo
-
-<div align="center">
-  <img src="media/canvas_kit_git_optimized.gif" alt="Canvas Kit demo: infinite pan/zoom with draggable items and bounds" width="900"/>
-</div>
-
-# Canvas Kit User Guide
-
 <div align="center">
 
 <h1 align="center">Canvas Kit — Infinite Canvas for Flutter</h1>
@@ -49,6 +40,12 @@
 
 <hr>
 
+</div>
+
+# Quick Demo
+
+<div align="center">
+  <img src="media/canvas_kit_git_optimized.gif" alt="Canvas Kit demo: infinite pan/zoom with draggable items and bounds" width="900"/>
 </div>
 
 # Canvas Kit User Guide
