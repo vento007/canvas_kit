@@ -1,6 +1,6 @@
 name: canvas_kit
 description: "Composable infinite pan/zoom canvas for Flutter with interactive and programmatic camera control."
-version: 0.5.1
+version: 0.5.1+1
 homepage: https://github.com/vento007/canvas_kit
 repository: https://github.com/vento007/canvas_kit
 issue_tracker: https://github.com/vento007/canvas_kit/issues
