@@ -1,3 +1,9 @@
+## 0.5.2 - 2025-09-14
+
+Metadata updates:
+- pubspec: add topics (flutter, canvas, pan-and-zoom, infinite-canvas, graphics) for better pub.dev discoverability
+- chore: bump patch version to 0.5.2
+
 ## 0.5.1+1 - 2025-09-08
 
 Docs and publishing fixes:
