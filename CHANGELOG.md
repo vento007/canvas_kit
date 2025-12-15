@@ -1,3 +1,14 @@
+## 0.5.3 - 2025-12-12
+
+Performance and rendering improvements:
+- Reduce rebuilds during drag by rebuilding only on transform changes (`CanvasKitController.transformRevision`)
+- World-space culling (avoid per-item world→screen math/allocs)
+- Render world-anchored items under a single world `Transform` for fewer per-item transforms
+- Bounds grid background draws only visible grid lines (big savings for large bounds)
+
+API additions:
+- `CanvasKit.onRenderStats` callback with `CanvasKitRenderStats` for culling/viewport visibility stats
+
 ## 0.5.2 - 2025-09-14
 
 Metadata updates:
