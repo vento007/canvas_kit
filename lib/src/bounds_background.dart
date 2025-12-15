@@ -2,6 +2,24 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:vector_math/vector_math_64.dart' show Matrix4, Vector3;
 
+bool _nearZero(double v, {double eps = 1e-9}) => v.abs() <= eps;
+
+bool _isAxisAlignedScaleTranslate(Matrix4 t, {double eps = 1e-9}) {
+  final m = t.storage;
+  return _nearZero(m[1], eps: eps) &&
+      _nearZero(m[4], eps: eps) &&
+      _nearZero(m[2], eps: eps) &&
+      _nearZero(m[6], eps: eps) &&
+      _nearZero(m[8], eps: eps) &&
+      _nearZero(m[9], eps: eps) &&
+      _nearZero(m[3], eps: eps) &&
+      _nearZero(m[7], eps: eps) &&
+      _nearZero(m[11], eps: eps) &&
+      _nearZero(m[14], eps: eps) &&
+      (m[10] - 1.0).abs() <= eps &&
+      (m[15] - 1.0).abs() <= eps;
+}
+
 /// Package-provided background that draws a grid clipped to a fixed world
 /// bounds rectangle and an inner frame that scales with zoom.
 class BoundsBackground extends StatelessWidget {
@@ -117,22 +135,31 @@ class _BoundsGridPainter extends CustomPainter {
       ..style = PaintingStyle.stroke
       ..strokeWidth = 1.0;
 
-    // Grid lines strictly inside world bounds
-    final startX = (bounds.left / gridSpacing).floor() * gridSpacing;
-    final startY = (bounds.top / gridSpacing).floor() * gridSpacing;
-    // Vertical grid
-    for (double worldX = startX; worldX <= bounds.right; worldX += gridSpacing) {
-      if (worldX < bounds.left) continue;
-      final p1 = _worldToScreen(Offset(worldX, bounds.top));
-      final p2 = _worldToScreen(Offset(worldX, bounds.bottom));
-      canvas.drawLine(p1, p2, gridPaint);
-    }
-    // Horizontal grid
-    for (double worldY = startY; worldY <= bounds.bottom; worldY += gridSpacing) {
-      if (worldY < bounds.top) continue;
-      final p1 = _worldToScreen(Offset(bounds.left, worldY));
-      final p2 = _worldToScreen(Offset(bounds.right, worldY));
-      canvas.drawLine(p1, p2, gridPaint);
+    // Only draw visible grid lines (massive savings for huge bounds).
+    final visibleWorld = _visibleWorldRect(size).intersect(bounds);
+    if (!visibleWorld.isEmpty) {
+      final startX =
+          (visibleWorld.left / gridSpacing).floorToDouble() * gridSpacing;
+      final endX =
+          (visibleWorld.right / gridSpacing).ceilToDouble() * gridSpacing;
+      final startY =
+          (visibleWorld.top / gridSpacing).floorToDouble() * gridSpacing;
+      final endY =
+          (visibleWorld.bottom / gridSpacing).ceilToDouble() * gridSpacing;
+
+      for (double worldX = startX; worldX <= endX; worldX += gridSpacing) {
+        if (worldX < bounds.left || worldX > bounds.right) continue;
+        final p1 = _worldToScreen(Offset(worldX, visibleWorld.top));
+        final p2 = _worldToScreen(Offset(worldX, visibleWorld.bottom));
+        canvas.drawLine(p1, p2, gridPaint);
+      }
+
+      for (double worldY = startY; worldY <= endY; worldY += gridSpacing) {
+        if (worldY < bounds.top || worldY > bounds.bottom) continue;
+        final p1 = _worldToScreen(Offset(visibleWorld.left, worldY));
+        final p2 = _worldToScreen(Offset(visibleWorld.right, worldY));
+        canvas.drawLine(p1, p2, gridPaint);
+      }
     }
 
     canvas.restore();
@@ -176,8 +203,47 @@ class _BoundsGridPainter extends CustomPainter {
   }
 
   Offset _worldToScreen(Offset worldPoint) {
-    final Vector3 v = Vector3(worldPoint.dx, worldPoint.dy, 0)..applyMatrix4(transform);
+    if (_isAxisAlignedScaleTranslate(transform)) {
+      final m = transform.storage;
+      return Offset(
+        worldPoint.dx * m[0] + m[12],
+        worldPoint.dy * m[5] + m[13],
+      );
+    }
+    final Vector3 v =
+        Vector3(worldPoint.dx, worldPoint.dy, 0)..applyMatrix4(transform);
     return Offset(v.x, v.y);
+  }
+
+  Rect _visibleWorldRect(Size size) {
+    if (_isAxisAlignedScaleTranslate(transform)) {
+      final m = transform.storage;
+      final sx = m[0];
+      final sy = m[5];
+      final tx = m[12];
+      final ty = m[13];
+      if (!_nearZero(sx) && !_nearZero(sy)) {
+        final left = (0.0 - tx) / sx;
+        final top = (0.0 - ty) / sy;
+        final right = (size.width - tx) / sx;
+        final bottom = (size.height - ty) / sy;
+        return Rect.fromLTRB(
+          math.min(left, right),
+          math.min(top, bottom),
+          math.max(left, right),
+          math.max(top, bottom),
+        );
+      }
+    }
+    final inv = Matrix4.inverted(transform);
+    final tl = Vector3(0, 0, 0)..applyMatrix4(inv);
+    final br = Vector3(size.width, size.height, 0)..applyMatrix4(inv);
+    return Rect.fromLTRB(
+      math.min(tl.x, br.x),
+      math.min(tl.y, br.y),
+      math.max(tl.x, br.x),
+      math.max(tl.y, br.y),
+    );
   }
 
   @override

@@ -1,9 +1,31 @@
 import 'dart:math' as math;
 
-import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:vector_math/vector_math_64.dart' show Matrix4, Vector3;
+
+bool _nearZero(double v, {double eps = 1e-9}) => v.abs() <= eps;
+
+bool _isAxisAlignedScaleTranslate(Matrix4 t, {double eps = 1e-9}) {
+  final m = t.storage;
+  // Column-major:
+  // [ m0  m4  m8  m12 ]
+  // [ m1  m5  m9  m13 ]
+  // [ m2  m6  m10 m14 ]
+  // [ m3  m7  m11 m15 ]
+  return _nearZero(m[1], eps: eps) &&
+      _nearZero(m[4], eps: eps) &&
+      _nearZero(m[2], eps: eps) &&
+      _nearZero(m[6], eps: eps) &&
+      _nearZero(m[8], eps: eps) &&
+      _nearZero(m[9], eps: eps) &&
+      _nearZero(m[3], eps: eps) &&
+      _nearZero(m[7], eps: eps) &&
+      _nearZero(m[11], eps: eps) &&
+      _nearZero(m[14], eps: eps) &&
+      (m[10] - 1.0).abs() <= eps &&
+      (m[15] - 1.0).abs() <= eps;
+}
 
 /// Interaction strategy for the canvas.
 ///
@@ -46,6 +68,7 @@ class CanvasKit extends StatefulWidget {
 
   /// Padding (screen pixels) used when auto‑fitting to [bounds]. Default is 40.
   final double boundsFitPadding;
+  final ValueChanged<CanvasKitRenderStats>? onRenderStats;
 
   // Optional: if provided in programmatic mode, the package will not handle
   // background pan/wheel; instead, this overlay can implement all gestures.
@@ -73,6 +96,7 @@ class CanvasKit extends StatefulWidget {
     this.bounds,
     this.autoFitToBounds = true,
     this.boundsFitPadding = 40.0,
+    this.onRenderStats,
   });
 
   @override
@@ -86,6 +110,8 @@ class CanvasKitController extends ChangeNotifier {
   final double maxZoom;
   _CanvasKitState? _attached;
   final Set<String> _dragging = <String>{};
+  Size? _viewportSize;
+  int _transformRevision = 0;
 
   /// Optional boundary rect in world coordinates
   Rect? bounds;
@@ -102,6 +128,7 @@ class CanvasKitController extends ChangeNotifier {
   }) : _transform = initialTransform?.clone() ?? Matrix4.identity();
 
   Matrix4 get transform => _transform.clone();
+  int get transformRevision => _transformRevision;
   double get scale => _transform.getMaxScaleOnAxis();
   bool isDragging(String id) => _dragging.contains(id);
   bool get hasActiveDrag => _dragging.isNotEmpty;
@@ -118,9 +145,20 @@ class CanvasKitController extends ChangeNotifier {
     if (_attached == state) _attached = null;
   }
 
+  void _setViewportSize(Size size) {
+    _viewportSize = size;
+  }
+
+  void _markTransformChanged({bool notify = false}) {
+    _transformRevision++;
+    if (notify) notifyListeners();
+  }
+
   void _setTransformInternal(Matrix4 t,
-      {bool notify = false, bool applyConstraints = true}) {
-    _transform = t.clone();
+      {bool notify = false,
+      bool applyConstraints = true,
+      bool takeOwnership = false}) {
+    _transform = takeOwnership ? t : t.clone();
 
     // Apply boundary constraints if enabled
     if (applyConstraints &&
@@ -130,7 +168,7 @@ class CanvasKitController extends ChangeNotifier {
       _constrainToBounds();
     }
 
-    if (notify) notifyListeners();
+    _markTransformChanged(notify: notify);
   }
 
   void beginDrag(String id) {
@@ -145,6 +183,25 @@ class CanvasKitController extends ChangeNotifier {
 
   /// Compute the currently visible world rectangle for a given [viewportSize].
   Rect getVisibleWorldRect(Size viewportSize) {
+    if (_isAxisAlignedScaleTranslate(_transform)) {
+      final m = _transform.storage;
+      final sx = m[0];
+      final sy = m[5];
+      final tx = m[12];
+      final ty = m[13];
+      if (!_nearZero(sx) && !_nearZero(sy)) {
+        final left = (0.0 - tx) / sx;
+        final top = (0.0 - ty) / sy;
+        final right = (viewportSize.width - tx) / sx;
+        final bottom = (viewportSize.height - ty) / sy;
+        return Rect.fromLTRB(
+          math.min(left, right),
+          math.min(top, bottom),
+          math.max(left, right),
+          math.max(top, bottom),
+        );
+      }
+    }
     final topLeft = screenToWorld(Offset.zero);
     final bottomRight =
         screenToWorld(Offset(viewportSize.width, viewportSize.height));
@@ -172,12 +229,9 @@ class CanvasKitController extends ChangeNotifier {
 
   // Helper: Constrain the view to bounds
   void _constrainToBounds() {
-    if (bounds == null || _attached == null) return;
-
-    final renderBox = _attached!.context.findRenderObject() as RenderBox?;
-    if (renderBox == null || !renderBox.hasSize) return;
-
-    final viewportSize = renderBox.size;
+    if (bounds == null) return;
+    final viewportSize = _viewportSize;
+    if (viewportSize == null) return;
     final visibleRect = getVisibleWorldRect(viewportSize);
 
     double dx = 0;
@@ -221,8 +275,9 @@ class CanvasKitController extends ChangeNotifier {
 
   /// Translate the world by [worldDelta]. Positive X/Y moves content right/down.
   void translateWorld(Offset worldDelta) {
+    if (worldDelta == Offset.zero) return;
     final next = _transform.clone()..translate(worldDelta.dx, worldDelta.dy);
-    _setTransformInternal(next, notify: true);
+    _setTransformInternal(next, notify: true, takeOwnership: true);
   }
 
   /// Set absolute [nextScale] around an optional [focalWorld] point (world coords).
@@ -230,12 +285,9 @@ class CanvasKitController extends ChangeNotifier {
   void setScale(double nextScale, {Offset focalWorld = Offset.zero}) {
     // Apply minimum scale for bounds if set
     double minScaleAllowed = minZoom;
-    if (bounds != null && _attached != null) {
-      final renderBox = _attached!.context.findRenderObject() as RenderBox?;
-      if (renderBox != null && renderBox.hasSize) {
-        minScaleAllowed =
-            math.max(minZoom, getMinimumScaleForBounds(renderBox.size));
-      }
+    if (bounds != null && _viewportSize != null) {
+      minScaleAllowed =
+          math.max(minZoom, getMinimumScaleForBounds(_viewportSize!));
     }
 
     final clamped = nextScale.clamp(minScaleAllowed, maxZoom).toDouble();
@@ -246,12 +298,22 @@ class CanvasKitController extends ChangeNotifier {
       ..translate(focalWorld.dx, focalWorld.dy)
       ..scale(s, s)
       ..translate(-focalWorld.dx, -focalWorld.dy);
-    _setTransformInternal(next, notify: true);
+    _setTransformInternal(next, notify: true, takeOwnership: true);
   }
 
   // Helpers
   /// Convert a screen (logical pixel) point to world coordinates.
   Offset screenToWorld(Offset screenPoint) {
+    if (_isAxisAlignedScaleTranslate(_transform)) {
+      final m = _transform.storage;
+      final sx = m[0];
+      final sy = m[5];
+      final tx = m[12];
+      final ty = m[13];
+      if (!_nearZero(sx) && !_nearZero(sy)) {
+        return Offset((screenPoint.dx - tx) / sx, (screenPoint.dy - ty) / sy);
+      }
+    }
     final inverted = Matrix4.inverted(_transform);
     final Vector3 v = Vector3(screenPoint.dx, screenPoint.dy, 0)
       ..applyMatrix4(inverted);
@@ -260,6 +322,14 @@ class CanvasKitController extends ChangeNotifier {
 
   /// Convert a world point to screen (logical pixel) coordinates.
   Offset worldToScreen(Offset worldPoint) {
+    if (_isAxisAlignedScaleTranslate(_transform)) {
+      final m = _transform.storage;
+      final sx = m[0];
+      final sy = m[5];
+      final tx = m[12];
+      final ty = m[13];
+      return Offset(worldPoint.dx * sx + tx, worldPoint.dy * sy + ty);
+    }
     final Vector3 v = Vector3(worldPoint.dx, worldPoint.dy, 0)
       ..applyMatrix4(_transform);
     return Offset(v.x, v.y);
@@ -350,28 +420,29 @@ class CanvasKitController extends ChangeNotifier {
 }
 
 class _CanvasKitState extends State<CanvasKit> {
-  late Matrix4 _transform;
   CanvasKitController? _controller;
   // For interactive pinch handling (simple demo)
   double? _scaleStart;
   Offset? _focalWorldAtStart;
   bool _isInitialized = false;
+  int _lastTransformRevision = -1;
 
   @override
   void initState() {
     super.initState();
-    _transform = Matrix4.identity()
+    final initial = Matrix4.identity()
       ..translate(widget.initialPan.dx, widget.initialPan.dy)
       ..scale(widget.initialZoom, widget.initialZoom);
     _controller = widget.controller ??
         CanvasKitController(
-          initialTransform: _transform.clone(),
+          initialTransform: initial,
           minZoom: widget.minZoom,
           maxZoom: widget.maxZoom,
           bounds: widget.bounds,
         );
     _controller!._attachWidget(this);
     _controller!.addListener(_onControllerChanged);
+    _lastTransformRevision = _controller!.transformRevision;
   }
 
   @override
@@ -391,261 +462,130 @@ class _CanvasKitState extends State<CanvasKit> {
     }
   }
 
-  // EXACT COPY from main_simple.dart
-  Offset _screenToWorld(Offset screenPoint) {
-    final inverted = Matrix4.inverted(_transform);
-    final Vector3 v = Vector3(screenPoint.dx, screenPoint.dy, 0)
-      ..applyMatrix4(inverted);
-    return Offset(v.x, v.y);
-  }
-
   @override
   Widget build(BuildContext context) {
-    final scale = _transform.getMaxScaleOnAxis();
     return Scaffold(
-      body: Listener(
-        behavior: HitTestBehavior.translucent,
-        onPointerSignal: (event) {
-          if (!widget.enableWheelZoom || event is! PointerScrollEvent) return;
-          // If programmatic mode and a gesture overlay is provided, defer wheel handling to overlay
-          if (widget.interactionMode == InteractionMode.programmatic &&
-              widget.gestureOverlayBuilder != null) {
-            return;
-          }
-          final PointerScrollEvent e = event; // safe after type check
-          if (kDebugMode) {
-            print(
-                '[CanvasKit] PointerScrollEvent received. interactionMode=${widget.interactionMode} delta=${e.scrollDelta}');
-          }
-          final double scaleDelta = event.scrollDelta.dy > 0 ? 0.9 : 1.1;
-          final Offset screenPos = event.localPosition;
-          final Offset worldBefore = _screenToWorld(screenPos);
+      body: LayoutBuilder(builder: (context, constraints) {
+        final viewportSize = Size(constraints.maxWidth, constraints.maxHeight);
+        _controller!._setViewportSize(viewportSize);
+        final transform = _controller!._transform;
+        final scale = _controller!.scale;
 
-          if (widget.interactionMode == InteractionMode.interactive) {
-            // Local state-managed zoom
-            final currentZoom = _transform.getMaxScaleOnAxis();
-
-            // Calculate minimum zoom based on bounds if set
-            double minZoomAllowed = widget.minZoom;
-            if (widget.bounds != null) {
-              final renderBox = context.findRenderObject() as RenderBox?;
-              if (renderBox != null && renderBox.hasSize) {
-                minZoomAllowed = math.max(widget.minZoom,
-                    _controller!.getMinimumScaleForBounds(renderBox.size));
-              }
+        return Listener(
+          behavior: HitTestBehavior.translucent,
+          onPointerSignal: (event) {
+            if (!widget.enableWheelZoom || event is! PointerScrollEvent) return;
+            if (widget.interactionMode == InteractionMode.programmatic &&
+                widget.gestureOverlayBuilder != null) {
+              return;
             }
+            final double scaleDelta = event.scrollDelta.dy > 0 ? 0.9 : 1.1;
+            final Offset screenPos = event.localPosition;
+            final Offset worldBefore = _controller!.screenToWorld(screenPos);
+            _controller!.setScale(_controller!.scale * scaleDelta,
+                focalWorld: worldBefore);
+          },
+          child: Stack(
+            children: [
+              if (widget.backgroundBuilder != null)
+                Positioned.fill(child: widget.backgroundBuilder!(transform)),
 
-            final newZoom = (currentZoom * scaleDelta)
-                .clamp(minZoomAllowed, widget.maxZoom);
-            if ((newZoom - currentZoom).abs() > 1e-6) {
-              setState(() {
-                final Matrix4 next = _transform.clone();
-                next.translate(worldBefore.dx, worldBefore.dy);
-                next.scale(newZoom / currentZoom, newZoom / currentZoom);
-                next.translate(-worldBefore.dx, -worldBefore.dy);
-                _transform = next;
-                _controller?._setTransformInternal(next, notify: true);
-              });
-              if (kDebugMode) {
-                final hasDrag = _controller?.hasActiveDrag == true;
-                print(
-                    '[CanvasKit] Zoom applied (interactive) focalWorld=${worldBefore.dx.toStringAsFixed(1)},${worldBefore.dy.toStringAsFixed(1)} scaleBefore=${currentZoom.toStringAsFixed(3)} -> scaleAfter=${_transform.getMaxScaleOnAxis().toStringAsFixed(3)} hasActiveDrag=$hasDrag');
-              }
-              widget.onZoomChanged?.call(_transform.getMaxScaleOnAxis());
-            }
-          } else {
-            // Programmatic: drive zoom via controller
-            final currentZoom = _controller!.scale;
-            _controller!
-                .setScale(currentZoom * scaleDelta, focalWorld: worldBefore);
-            if (kDebugMode) {
-              final hasDrag = _controller?.hasActiveDrag == true;
-              print(
-                  '[CanvasKit] Zoom applied (programmatic via controller) focalWorld=${worldBefore.dx.toStringAsFixed(1)},${worldBefore.dy.toStringAsFixed(1)} scaleBefore=${currentZoom.toStringAsFixed(3)} -> scaleAfter=${_controller!.scale.toStringAsFixed(3)} hasActiveDrag=$hasDrag');
-            }
-            widget.onZoomChanged?.call(_controller!.scale);
-          }
-        },
-        child: Stack(
-          children: [
-            // User-provided background with current transform
-            if (widget.backgroundBuilder != null)
-              Positioned.fill(child: widget.backgroundBuilder!(_transform)),
-
-            // User-provided foreground layers (connections, overlays, etc.)
-            ...widget.foregroundLayers.map(
-              (painterBuilder) => Positioned.fill(
-                child: IgnorePointer(
-                  child: CustomPaint(
-                    painter: painterBuilder(_transform),
-                  ),
-                ),
-              ),
-            ),
-
-            // App-provided gesture overlay (if any)
-            if (widget.gestureOverlayBuilder != null)
-              Positioned.fill(
-                  child:
-                      widget.gestureOverlayBuilder!(_transform, _controller!)),
-
-            // Empty space gesture detection (suppressed in programmatic mode when overlay is provided)
-            if (!(widget.interactionMode == InteractionMode.programmatic &&
-                widget.gestureOverlayBuilder != null))
-              Positioned.fill(
-                child: GestureDetector(
-                  behavior: HitTestBehavior.opaque,
-                  onScaleStart: (details) {
-                    // Prevent background gestures while dragging any item
-                    if (_controller?.hasActiveDrag == true) return;
-                    _scaleStart = _transform.getMaxScaleOnAxis();
-                    _focalWorldAtStart =
-                        _screenToWorld(details.localFocalPoint);
-                    if (kDebugMode) {
-                      print(
-                          '[CanvasKit] onScaleStart (interactive) focalLocal=${details.localFocalPoint} scaleStart=$_scaleStart focalWorldStart=$_focalWorldAtStart');
-                    }
-                  },
-                  onScaleUpdate: (details) {
-                    // Skip if overlay is provided in programmatic mode (guarded above) or if pan disabled
-                    if (!widget.enablePan) return;
-                    if (_controller?.hasActiveDrag == true) return;
-
-                    if (widget.interactionMode == InteractionMode.interactive) {
-                      // Unify single-finger pan and two-finger pinch
-                      final pointerCount = details.pointerCount;
-                      if (pointerCount <= 1) {
-                        // Single-finger pan: use focalPointDelta and convert to world delta by dividing by scale
-                        final scale = _transform.getMaxScaleOnAxis();
-                        final adjustedDelta = Offset(
-                            details.focalPointDelta.dx / scale,
-                            details.focalPointDelta.dy / scale);
-                        if (adjustedDelta == Offset.zero) return;
-                        setState(() {
-                          final next = _transform.clone()
-                            ..translate(adjustedDelta.dx, adjustedDelta.dy);
-                          _transform = next;
-                          _controller?._setTransformInternal(next,
-                              notify: true);
-                        });
-                        if (kDebugMode) {
-                          print(
-                              '[CanvasKit] Pan (interactive, scale) adjustedDelta=$adjustedDelta');
-                        }
-                        return;
-                      }
-
-                      // Two-finger pinch: focal-locked zoom with corrective translation
-                      if (_scaleStart == null || _focalWorldAtStart == null) {
-                        return;
-                      }
-                      final currentScale = _scaleStart!;
-                      final proposed = currentScale * details.scale;
-
-                      // Calculate minimum zoom based on bounds if set
-                      double minZoomAllowed = widget.minZoom;
-                      if (widget.bounds != null) {
-                        final renderBox =
-                            context.findRenderObject() as RenderBox?;
-                        if (renderBox != null && renderBox.hasSize) {
-                          minZoomAllowed = math.max(
-                              widget.minZoom,
-                              _controller!
-                                  .getMinimumScaleForBounds(renderBox.size));
-                        }
-                      }
-
-                      // Clamp to widget min/max
-                      final clamped = proposed
-                          .clamp(minZoomAllowed, widget.maxZoom)
-                          .toDouble();
-
-                      // Apply scaling around the original focal world point
-                      final Matrix4 next = _transform.clone()
-                        ..translate(
-                            _focalWorldAtStart!.dx, _focalWorldAtStart!.dy)
-                        ..scale(clamped / _transform.getMaxScaleOnAxis(),
-                            clamped / _transform.getMaxScaleOnAxis())
-                        ..translate(
-                            -_focalWorldAtStart!.dx, -_focalWorldAtStart!.dy);
-
-                      // Compute corrective pan to keep the focal under the fingers
-                      final Vector3 focalWorldVec = Vector3(
-                          _focalWorldAtStart!.dx, _focalWorldAtStart!.dy, 0)
-                        ..applyMatrix4(next);
-                      final Offset focalScreenNow =
-                          Offset(focalWorldVec.x, focalWorldVec.y);
-                      final Offset screenDelta =
-                          details.localFocalPoint - focalScreenNow;
-                      final double scaleNow = clamped;
-                      final Offset worldDelta = Offset(
-                          screenDelta.dx / scaleNow, screenDelta.dy / scaleNow);
-
-                      setState(() {
-                        final Matrix4 nextWithTranslate = next.clone()
-                          ..translate(worldDelta.dx, worldDelta.dy);
-                        _transform = nextWithTranslate;
-                        _controller?._setTransformInternal(nextWithTranslate,
-                            notify: true);
-                      });
-                      if (kDebugMode) {
-                        print(
-                            '[CanvasKit] Pinch (interactive) pointerCount=$pointerCount clamped=$clamped screenDelta=$screenDelta worldDelta=$worldDelta');
-                      }
-                      widget.onZoomChanged
-                          ?.call(_transform.getMaxScaleOnAxis());
-                    } else {
-                      // Programmatic mode (no overlay): keep previous behavior for single-finger pan only
-                      // Convert screen delta to world delta via controller
-                      final worldDelta = _controller!
-                          .deltaScreenToWorld(details.focalPointDelta);
-                      if (worldDelta == Offset.zero) return;
-                      _controller!.translateWorld(worldDelta);
-                      // Debug print removed to reduce log noise during panning
-                      // if (kDebugMode) {
-                      //   debugPrint('[CanvasKit] Pan (programmatic via controller, scale gesture) worldDelta=$worldDelta');
-                      // }
-                    }
-                  },
-                  onScaleEnd: (_) {
-                    _scaleStart = null;
-                    _focalWorldAtStart = null;
-                  },
-                  child: Container(
-                    width: double.infinity,
-                    height: double.infinity,
-                    color: Colors.transparent, // Make it hittable but invisible
+              ...widget.foregroundLayers.map(
+                (painterBuilder) => Positioned.fill(
+                  child: IgnorePointer(
+                    child: CustomPaint(
+                      painter: painterBuilder(transform),
+                    ),
                   ),
                 ),
               ),
 
-            // Canvas with user widgets
-            CanvasKitScope(
-              transform: _transform,
-              scale: scale,
-              controller: _controller!,
-              child: SimpleCanvas(
-                transform: _transform,
-                children: widget.children,
+              if (widget.gestureOverlayBuilder != null)
+                Positioned.fill(
+                    child:
+                        widget.gestureOverlayBuilder!(transform, _controller!)),
+
+              if (!(widget.interactionMode == InteractionMode.programmatic &&
+                  widget.gestureOverlayBuilder != null))
+                Positioned.fill(
+                  child: GestureDetector(
+                    behavior: HitTestBehavior.opaque,
+                    onScaleStart: (details) {
+                      if (_controller?.hasActiveDrag == true) return;
+                      _scaleStart = _controller!.scale;
+                      _focalWorldAtStart =
+                          _controller!.screenToWorld(details.localFocalPoint);
+                    },
+                    onScaleUpdate: (details) {
+                      if (!widget.enablePan) return;
+                      if (_controller?.hasActiveDrag == true) return;
+
+                      if (widget.interactionMode == InteractionMode.interactive) {
+                        final pointerCount = details.pointerCount;
+                        if (pointerCount <= 1) {
+                          _controller!.translateWorld(_controller!
+                              .deltaScreenToWorld(details.focalPointDelta));
+                          return;
+                        }
+
+                        if (_scaleStart == null || _focalWorldAtStart == null) {
+                          return;
+                        }
+
+                        final proposed = _scaleStart! * details.scale;
+                        _controller!
+                            .setScale(proposed, focalWorld: _focalWorldAtStart!);
+
+                        final currentScreen =
+                            _controller!.worldToScreen(_focalWorldAtStart!);
+                        final screenDelta =
+                            details.localFocalPoint - currentScreen;
+                        final correction = _controller!.deltaScreenToWorld(
+                            screenDelta);
+                        _controller!.translateWorld(correction);
+                      } else {
+                        final worldDelta = _controller!
+                            .deltaScreenToWorld(details.focalPointDelta);
+                        if (worldDelta == Offset.zero) return;
+                        _controller!.translateWorld(worldDelta);
+                      }
+                    },
+                    onScaleEnd: (_) {
+                      _scaleStart = null;
+                      _focalWorldAtStart = null;
+                    },
+                    child: const SizedBox.expand(),
+                  ),
+                ),
+
+              CanvasKitScope(
+                transform: transform,
+                scale: scale,
+                controller: _controller!,
+                transformRevision: _controller!.transformRevision,
+                child: SimpleCanvas(
+                  transform: transform,
+                  scale: scale,
+                  viewportSize: viewportSize,
+                  controller: _controller!,
+                  onRenderStats: widget.onRenderStats,
+                  children: widget.children,
+                ),
               ),
-            ),
-          ],
-        ),
-      ),
+            ],
+          ),
+        );
+      }),
     );
   }
 
   void _onControllerChanged() {
-    // When controller changes transform programmatically, update local state
-    final t = _controller!.transform;
-    if (!identical(t, _transform)) {
-      setState(() {
-        _transform = t.clone();
-      });
-      if (widget.onZoomChanged != null) {
-        widget.onZoomChanged!(_transform.getMaxScaleOnAxis());
-      }
-    }
+    final controller = _controller!;
+    final rev = controller.transformRevision;
+    if (rev == _lastTransformRevision) return;
+    _lastTransformRevision = rev;
+    setState(() {});
+    widget.onZoomChanged?.call(controller.scale);
   }
 
   @override
@@ -670,12 +610,14 @@ class CanvasKitScope extends InheritedWidget {
   final Matrix4 transform;
   final double scale;
   final CanvasKitController controller;
+  final int transformRevision;
 
   const CanvasKitScope({
     super.key,
     required this.transform,
     required this.scale,
     required this.controller,
+    this.transformRevision = 0,
     required super.child,
   });
 
@@ -685,9 +627,14 @@ class CanvasKitScope extends InheritedWidget {
     return scope!;
   }
 
+  static CanvasKitScope? maybeOf(BuildContext context) {
+    return context.dependOnInheritedWidgetOfExactType<CanvasKitScope>();
+  }
+
   @override
   bool updateShouldNotify(covariant CanvasKitScope oldWidget) {
-    return oldWidget.transform != transform ||
+    return oldWidget.transformRevision != transformRevision ||
+        !identical(oldWidget.transform, transform) ||
         oldWidget.scale != scale ||
         oldWidget.controller != controller;
   }
@@ -746,157 +693,244 @@ class CanvasItem {
 class SimpleCanvas extends StatelessWidget {
   final Matrix4 transform;
   final List<CanvasItem> children;
+  final double? scale;
+  final Size? viewportSize;
+  final CanvasKitController? controller;
+  final ValueChanged<CanvasKitRenderStats>? onRenderStats;
 
   const SimpleCanvas({
     super.key,
     required this.transform,
     required this.children,
+    this.scale,
+    this.viewportSize,
+    this.controller,
+    this.onRenderStats,
   });
 
   @override
   Widget build(BuildContext context) {
-    return LayoutBuilder(builder: (context, constraints) {
-      final viewportSize = Size(constraints.maxWidth, constraints.maxHeight);
-      // Scale the culling margin with zoom so large (zoomed) widgets aren't culled prematurely
-      final currentScale = transform.getMaxScaleOnAxis();
-      // Slightly over-scale margin to account for very large widgets near edges
-      final scaledMargin = 200 * currentScale * 1.25; // was 200 * scale
-      final screenBounds =
-          Rect.fromLTWH(0, 0, viewportSize.width, viewportSize.height)
-              .deflate(-scaledMargin);
-      return Stack(
-        clipBehavior: Clip.none,
-        children: children.where((item) {
-          final Vector3 worldPos =
-              Vector3(item.worldPosition.dx, item.worldPosition.dy, 0);
-          final Vector3 screenPos = worldPos..applyMatrix4(transform);
-          final Offset point = item.anchor == CanvasAnchor.world
-              ? Offset(screenPos.x, screenPos.y)
-              : (item.viewportPosition ?? Offset.zero);
-          // Keep actively dragging items even if offscreen
-          final scope =
-              context.dependOnInheritedWidgetOfExactType<CanvasKitScope>();
-          final dragging = scope?.controller.isDragging(item.id) ?? false;
-          if (dragging) return true;
+    final scope = CanvasKitScope.maybeOf(context);
+    final effectiveController = controller ?? scope?.controller;
+    final effectiveScale =
+        scale ?? scope?.scale ?? transform.getMaxScaleOnAxis();
 
-          // If we know the item's size, compute its screen-space rect and test overlap
-          if (item.estimatedSize != null) {
-            if (item.anchor == CanvasAnchor.world) {
-              final appliedScale = item.lockZoom ? 1.0 : currentScale;
-              final w = item.estimatedSize!.width * appliedScale;
-              final h = item.estimatedSize!.height * appliedScale;
-              final rect = Rect.fromLTWH(point.dx, point.dy, w, h);
-              return screenBounds.overlaps(rect);
-            } else {
-              // viewport anchored: size is in logical pixels; scale only if requested
-              final shouldScale = item.scaleWithZoom && !item.lockZoom;
-              final w = item.estimatedSize!.width *
-                  (shouldScale ? currentScale : 1.0);
-              final h = item.estimatedSize!.height *
-                  (shouldScale ? currentScale : 1.0);
-              final rect = Rect.fromLTWH(point.dx, point.dy, w, h);
-              return screenBounds.overlaps(rect);
-            }
-          }
+    final effectiveViewportSize = viewportSize;
+    if (effectiveViewportSize == null) {
+      return LayoutBuilder(builder: (context, constraints) {
+        final size = Size(constraints.maxWidth, constraints.maxHeight);
+        return _buildWith(
+          controller: effectiveController,
+          scale: effectiveScale,
+          viewportSize: size,
+        );
+      });
+    }
+    return _buildWith(
+      controller: effectiveController,
+      scale: effectiveScale,
+      viewportSize: effectiveViewportSize,
+    );
+  }
 
-          // Fallback: point containment
-          return screenBounds.contains(point);
-        }).map((item) {
-          final scale = transform.getMaxScaleOnAxis();
-          late final double left;
-          late final double top;
-          Widget content = item.child;
+  Widget _buildWith({
+    required CanvasKitController? controller,
+    required double scale,
+    required Size viewportSize,
+  }) {
+    Rect visibleWorldRectForTransform(Matrix4 t) {
+      if (_isAxisAlignedScaleTranslate(t)) {
+        final m = t.storage;
+        final sx = m[0];
+        final sy = m[5];
+        final tx = m[12];
+        final ty = m[13];
+        if (!_nearZero(sx) && !_nearZero(sy)) {
+          final left = (0.0 - tx) / sx;
+          final top = (0.0 - ty) / sy;
+          final right = (viewportSize.width - tx) / sx;
+          final bottom = (viewportSize.height - ty) / sy;
+          return Rect.fromLTRB(
+            math.min(left, right),
+            math.min(top, bottom),
+            math.max(left, right),
+            math.max(top, bottom),
+          );
+        }
+      }
+      final inv = Matrix4.inverted(t);
+      final tl = Vector3(0, 0, 0)..applyMatrix4(inv);
+      final br =
+          Vector3(viewportSize.width, viewportSize.height, 0)..applyMatrix4(inv);
+      return Rect.fromLTRB(
+        math.min(tl.x, br.x),
+        math.min(tl.y, br.y),
+        math.max(tl.x, br.x),
+        math.max(tl.y, br.y),
+      );
+    }
 
-          if (item.anchor == CanvasAnchor.world) {
-            final Vector3 worldPos =
-                Vector3(item.worldPosition.dx, item.worldPosition.dy, 0);
-            final Vector3 screenPos = worldPos..applyMatrix4(transform);
-            left = screenPos.x;
-            top = screenPos.y;
-            final double appliedScale = item.lockZoom ? 1.0 : scale;
+    final worldVisible =
+        (controller?.getVisibleWorldRect(viewportSize) ??
+                visibleWorldRectForTransform(transform))
+            .inflate(250.0);
+    final screenVisible =
+        Rect.fromLTWH(0, 0, viewportSize.width, viewportSize.height)
+            .inflate(250.0);
 
-            // If draggable, wrap first, then apply Transform around the wrapper so hit testing scales too
-            if (item.draggable) {
-              content = _DraggableWrapper(
-                key: ValueKey('drag-${item.id}'),
-                itemId: item.id,
-                // When wrapped by a Transform above, local deltas are already in scaled space; use 1.0
-                scale: 1.0,
-                anchor: item.anchor,
-                initialWorldPosition: item.worldPosition,
-                initialViewportPosition: item.viewportPosition ?? Offset.zero,
-                onWorldMoved: item.onWorldMoved,
-                onViewportMoved: item.onViewportMoved,
-                child: content,
-              );
-              content = Transform.scale(
-                scale: appliedScale,
-                alignment: Alignment.topLeft,
-                child: content,
-              );
-            } else {
-              // Non-draggable: previous behavior
-              content = Transform.scale(
-                scale: appliedScale,
-                alignment: Alignment.topLeft,
-                child: content,
-              );
-            }
-          } else {
-            // viewport anchored
-            final vp = item.viewportPosition ?? Offset.zero;
-            left = vp.dx;
-            top = vp.dy;
-            final shouldScale = item.scaleWithZoom && !item.lockZoom;
+    final List<Widget> worldItems = <Widget>[];
+    final List<Widget> viewportItems = <Widget>[];
+    int visibleWorldCount = 0;
+    int visibleViewportCount = 0;
 
-            if (item.draggable) {
-              content = _DraggableWrapper(
-                key: ValueKey('drag-${item.id}'),
-                itemId: item.id,
-                // If we apply Transform below, set scale accordingly; otherwise use current scale
-                scale: shouldScale ? 1.0 : scale,
-                anchor: item.anchor,
-                initialWorldPosition: item.worldPosition,
-                initialViewportPosition: item.viewportPosition ?? Offset.zero,
-                onWorldMoved: item.onWorldMoved,
-                onViewportMoved: item.onViewportMoved,
-                child: content,
-              );
-              if (shouldScale) {
-                content = Transform.scale(
-                  scale: scale,
-                  alignment: Alignment.topLeft,
-                  child: content,
-                );
-              }
-            } else {
-              if (shouldScale) {
-                content = Transform.scale(
-                  scale: scale,
-                  alignment: Alignment.topLeft,
-                  child: content,
-                );
-              }
-            }
-          }
+    for (final item in children) {
+      final bool visible;
+      if (controller?.isDragging(item.id) ?? false) {
+        visible = true;
+      } else if (item.anchor == CanvasAnchor.world) {
+        if (item.estimatedSize != null) {
+          final rect = Rect.fromLTWH(
+            item.worldPosition.dx,
+            item.worldPosition.dy,
+            item.estimatedSize!.width,
+            item.estimatedSize!.height,
+          );
+          visible = worldVisible.overlaps(rect);
+        } else {
+          visible = worldVisible.contains(item.worldPosition);
+        }
+      } else {
+        final point = item.viewportPosition ?? Offset.zero;
+        if (item.estimatedSize != null) {
+          final shouldScale = item.scaleWithZoom && !item.lockZoom;
+          final w = item.estimatedSize!.width * (shouldScale ? scale : 1.0);
+          final h = item.estimatedSize!.height * (shouldScale ? scale : 1.0);
+          visible = screenVisible.overlaps(Rect.fromLTWH(point.dx, point.dy, w, h));
+        } else {
+          visible = screenVisible.contains(point);
+        }
+      }
 
-          return Positioned(
-            key: ValueKey('item-${item.id}'),
-            left: left,
-            top: top,
+      if (!visible) continue;
+
+      if (item.anchor == CanvasAnchor.world) {
+        Widget visual = item.child;
+        if (item.lockZoom) {
+          visual = Transform.scale(
+            scale: 1.0 / scale,
+            alignment: Alignment.topLeft,
+            child: visual,
+          );
+        }
+        Widget content = visual;
+        if (item.draggable) {
+          content = _DraggableWrapper(
+            key: ValueKey('drag-${item.id}'),
+            itemId: item.id,
+            controller: controller,
+            anchor: item.anchor,
+            initialWorldPosition: item.worldPosition,
+            initialViewportPosition: item.viewportPosition ?? Offset.zero,
+            onWorldMoved: item.onWorldMoved,
+            onViewportMoved: item.onViewportMoved,
+            child: visual,
+          );
+        }
+        worldItems.add(Positioned(
+          key: ValueKey('item-${item.id}'),
+          left: item.worldPosition.dx,
+          top: item.worldPosition.dy,
+          child: content,
+        ));
+        visibleWorldCount++;
+      } else {
+        final vp = item.viewportPosition ?? Offset.zero;
+        Widget content = item.child;
+        if (item.draggable) {
+          content = _DraggableWrapper(
+            key: ValueKey('drag-${item.id}'),
+            itemId: item.id,
+            controller: controller,
+            anchor: item.anchor,
+            initialWorldPosition: item.worldPosition,
+            initialViewportPosition: item.viewportPosition ?? Offset.zero,
+            onWorldMoved: item.onWorldMoved,
+            onViewportMoved: item.onViewportMoved,
             child: content,
           );
-        }).toList(),
-      );
-    });
+        }
+        if (item.scaleWithZoom && !item.lockZoom) {
+          content = Transform.scale(
+            scale: scale,
+            alignment: Alignment.topLeft,
+            child: content,
+          );
+        }
+        viewportItems.add(Positioned(
+          key: ValueKey('item-${item.id}'),
+          left: vp.dx,
+          top: vp.dy,
+          child: content,
+        ));
+        visibleViewportCount++;
+      }
+    }
+
+    onRenderStats?.call(CanvasKitRenderStats(
+      totalItems: children.length,
+      visibleItems: visibleWorldCount + visibleViewportCount,
+      visibleWorldItems: visibleWorldCount,
+      visibleViewportItems: visibleViewportCount,
+      visibleWorldRect: worldVisible,
+      scale: scale,
+      viewportSize: viewportSize,
+    ));
+
+    return Stack(
+      clipBehavior: Clip.none,
+      children: [
+        Transform(
+          transform: transform,
+          alignment: Alignment.topLeft,
+          child: Stack(
+            clipBehavior: Clip.none,
+            children: worldItems,
+          ),
+        ),
+        Stack(
+          clipBehavior: Clip.none,
+          children: viewportItems,
+        ),
+      ],
+    );
   }
+}
+
+class CanvasKitRenderStats {
+  final int totalItems;
+  final int visibleItems;
+  final int visibleWorldItems;
+  final int visibleViewportItems;
+  final Rect visibleWorldRect;
+  final double scale;
+  final Size viewportSize;
+
+  const CanvasKitRenderStats({
+    required this.totalItems,
+    required this.visibleItems,
+    required this.visibleWorldItems,
+    required this.visibleViewportItems,
+    required this.visibleWorldRect,
+    required this.scale,
+    required this.viewportSize,
+  });
 }
 
 /// Internal wrapper that converts screen-space drag deltas into world-space
 /// and calls back with the updated world position. It does not keep state;
 /// the parent should update the `CanvasItem.worldPosition`.
 class _DraggableWrapper extends StatefulWidget {
-  final double scale;
+  final CanvasKitController? controller;
   final CanvasAnchor anchor;
   final Offset initialWorldPosition;
   final Offset initialViewportPosition;
@@ -908,7 +942,7 @@ class _DraggableWrapper extends StatefulWidget {
   const _DraggableWrapper({
     super.key,
     required this.itemId,
-    required this.scale,
+    this.controller,
     required this.anchor,
     required this.initialWorldPosition,
     required this.initialViewportPosition,
@@ -946,54 +980,34 @@ class _DraggableWrapperState extends State<_DraggableWrapper> {
 
   @override
   Widget build(BuildContext context) {
-    final scope = context.dependOnInheritedWidgetOfExactType<CanvasKitScope>();
     return GestureDetector(
       behavior: HitTestBehavior.deferToChild,
       onPanStart: (details) {
         _dragStartWorldPos = widget.initialWorldPosition;
         _dragStartViewportPos = widget.initialViewportPosition;
-        scope?.controller.beginDrag(widget.itemId);
-        if (kDebugMode) {
-          print(
-              '[CanvasKit] Drag start itemId=${widget.itemId} anchor=${widget.anchor} scale=${widget.scale} worldStart=$_dragStartWorldPos viewportStart=$_dragStartViewportPos');
-        }
+        widget.controller?.beginDrag(widget.itemId);
       },
       onPanUpdate: (details) {
         if (widget.anchor == CanvasAnchor.world) {
           if (widget.onWorldMoved == null) return;
-          // Convert screen delta to world delta using current scale
-          final worldDelta = Offset(
-              details.delta.dx / widget.scale, details.delta.dy / widget.scale);
+          // With the world layer transformed, gesture deltas are already in world-space.
+          final worldDelta = details.delta;
           final nextPos = _dragStartWorldPos + worldDelta;
           widget.onWorldMoved?.call(nextPos);
           _dragStartWorldPos = nextPos;
-          if (kDebugMode) {
-            print(
-                '[CanvasKit] Drag update (world) itemId=${widget.itemId} deltaScreen=${details.delta} worldDelta=$worldDelta nextWorld=$nextPos');
-          }
         } else {
           if (widget.onViewportMoved == null) return;
           final nextVp = _dragStartViewportPos +
               details.delta; // viewport is in screen pixels
           widget.onViewportMoved?.call(nextVp);
           _dragStartViewportPos = nextVp;
-          if (kDebugMode) {
-            print(
-                '[CanvasKit] Drag update (viewport) itemId=${widget.itemId} deltaScreen=${details.delta} nextViewport=$nextVp');
-          }
         }
       },
       onPanEnd: (_) {
-        scope?.controller.endDrag(widget.itemId);
-        if (kDebugMode) {
-          print('[CanvasKit] Drag end itemId=${widget.itemId}');
-        }
+        widget.controller?.endDrag(widget.itemId);
       },
       onPanCancel: () {
-        scope?.controller.endDrag(widget.itemId);
-        if (kDebugMode) {
-          print('[CanvasKit] Drag cancel itemId=${widget.itemId}');
-        }
+        widget.controller?.endDrag(widget.itemId);
       },
       child: widget.child,
     );

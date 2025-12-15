@@ -231,8 +231,12 @@ class _BoundsDemoPageState extends State<BoundsDemoPage> {
                         transform: transform,
                         scale: controller.scale,
                         controller: controller,
+                        transformRevision: controller.transformRevision,
                         child: SimpleCanvas(
                           transform: transform,
+                          scale: controller.scale,
+                          viewportSize: viewportSize,
+                          controller: controller,
                           children: [
                             // Origin marker
                             CanvasItem(
