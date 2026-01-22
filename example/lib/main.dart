@@ -12,6 +12,7 @@ import 'demos/programmatic_demo.dart';
 import 'demos/snake_demo.dart';
 import 'demos/fly_to_demo.dart';
 import 'demos/parallax/parallax_demo_clean.dart';
+import 'demos/transparent_background_demo.dart';
 
 void main() {
   // Enable gesture arena diagnostics for debugging recognizer conflicts
@@ -59,6 +60,16 @@ class DemoHomePage extends StatelessWidget {
                     ),
                   ),
                   child: const Text('Interactive (package pan/zoom)'),
+                ),
+                const SizedBox(height: 12),
+                OutlinedButton(
+                  onPressed: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => const TransparentBackgroundDemoPage(),
+                    ),
+                  ),
+                  child: const Text('Transparent background'),
                 ),
                 const SizedBox(height: 12),
                 OutlinedButton(

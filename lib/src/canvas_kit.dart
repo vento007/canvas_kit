@@ -464,119 +464,117 @@ class _CanvasKitState extends State<CanvasKit> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      body: LayoutBuilder(builder: (context, constraints) {
-        final viewportSize = Size(constraints.maxWidth, constraints.maxHeight);
-        _controller!._setViewportSize(viewportSize);
-        final transform = _controller!._transform;
-        final scale = _controller!.scale;
+    return LayoutBuilder(builder: (context, constraints) {
+      final viewportSize = Size(constraints.maxWidth, constraints.maxHeight);
+      _controller!._setViewportSize(viewportSize);
+      final transform = _controller!._transform;
+      final scale = _controller!.scale;
 
-        return Listener(
-          behavior: HitTestBehavior.translucent,
-          onPointerSignal: (event) {
-            if (!widget.enableWheelZoom || event is! PointerScrollEvent) return;
-            if (widget.interactionMode == InteractionMode.programmatic &&
-                widget.gestureOverlayBuilder != null) {
-              return;
-            }
-            final double scaleDelta = event.scrollDelta.dy > 0 ? 0.9 : 1.1;
-            final Offset screenPos = event.localPosition;
-            final Offset worldBefore = _controller!.screenToWorld(screenPos);
-            _controller!.setScale(_controller!.scale * scaleDelta,
-                focalWorld: worldBefore);
-          },
-          child: Stack(
-            children: [
-              if (widget.backgroundBuilder != null)
-                Positioned.fill(child: widget.backgroundBuilder!(transform)),
+      return Listener(
+        behavior: HitTestBehavior.translucent,
+        onPointerSignal: (event) {
+          if (!widget.enableWheelZoom || event is! PointerScrollEvent) return;
+          if (widget.interactionMode == InteractionMode.programmatic &&
+              widget.gestureOverlayBuilder != null) {
+            return;
+          }
+          final double scaleDelta = event.scrollDelta.dy > 0 ? 0.9 : 1.1;
+          final Offset screenPos = event.localPosition;
+          final Offset worldBefore = _controller!.screenToWorld(screenPos);
+          _controller!.setScale(_controller!.scale * scaleDelta,
+              focalWorld: worldBefore);
+        },
+        child: Stack(
+          children: [
+            if (widget.backgroundBuilder != null)
+              Positioned.fill(child: widget.backgroundBuilder!(transform)),
 
-              ...widget.foregroundLayers.map(
-                (painterBuilder) => Positioned.fill(
-                  child: IgnorePointer(
-                    child: CustomPaint(
-                      painter: painterBuilder(transform),
-                    ),
+            ...widget.foregroundLayers.map(
+              (painterBuilder) => Positioned.fill(
+                child: IgnorePointer(
+                  child: CustomPaint(
+                    painter: painterBuilder(transform),
                   ),
                 ),
               ),
+            ),
 
-              if (widget.gestureOverlayBuilder != null)
-                Positioned.fill(
-                    child:
-                        widget.gestureOverlayBuilder!(transform, _controller!)),
+            if (widget.gestureOverlayBuilder != null)
+              Positioned.fill(
+                  child: widget.gestureOverlayBuilder!(transform, _controller!)),
 
-              if (!(widget.interactionMode == InteractionMode.programmatic &&
-                  widget.gestureOverlayBuilder != null))
-                Positioned.fill(
-                  child: GestureDetector(
-                    behavior: HitTestBehavior.opaque,
-                    onScaleStart: (details) {
-                      if (_controller?.hasActiveDrag == true) return;
-                      _scaleStart = _controller!.scale;
-                      _focalWorldAtStart =
-                          _controller!.screenToWorld(details.localFocalPoint);
-                    },
-                    onScaleUpdate: (details) {
-                      if (!widget.enablePan) return;
-                      if (_controller?.hasActiveDrag == true) return;
+            if (!(widget.interactionMode == InteractionMode.programmatic &&
+                widget.gestureOverlayBuilder != null))
+              Positioned.fill(
+                child: GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onScaleStart: (details) {
+                    if (_controller?.hasActiveDrag == true) return;
+                    _scaleStart = _controller!.scale;
+                    _focalWorldAtStart =
+                        _controller!.screenToWorld(details.localFocalPoint);
+                  },
+                  onScaleUpdate: (details) {
+                    if (!widget.enablePan) return;
+                    if (_controller?.hasActiveDrag == true) return;
 
-                      if (widget.interactionMode == InteractionMode.interactive) {
-                        final pointerCount = details.pointerCount;
-                        if (pointerCount <= 1) {
-                          _controller!.translateWorld(_controller!
-                              .deltaScreenToWorld(details.focalPointDelta));
-                          return;
-                        }
-
-                        if (_scaleStart == null || _focalWorldAtStart == null) {
-                          return;
-                        }
-
-                        final proposed = _scaleStart! * details.scale;
-                        _controller!
-                            .setScale(proposed, focalWorld: _focalWorldAtStart!);
-
-                        final currentScreen =
-                            _controller!.worldToScreen(_focalWorldAtStart!);
-                        final screenDelta =
-                            details.localFocalPoint - currentScreen;
-                        final correction = _controller!.deltaScreenToWorld(
-                            screenDelta);
-                        _controller!.translateWorld(correction);
-                      } else {
-                        final worldDelta = _controller!
-                            .deltaScreenToWorld(details.focalPointDelta);
-                        if (worldDelta == Offset.zero) return;
-                        _controller!.translateWorld(worldDelta);
+                    if (widget.interactionMode == InteractionMode.interactive) {
+                      final pointerCount = details.pointerCount;
+                      if (pointerCount <= 1) {
+                        _controller!.translateWorld(
+                            _controller!.deltaScreenToWorld(
+                                details.focalPointDelta));
+                        return;
                       }
-                    },
-                    onScaleEnd: (_) {
-                      _scaleStart = null;
-                      _focalWorldAtStart = null;
-                    },
-                    child: const SizedBox.expand(),
-                  ),
-                ),
 
-              CanvasKitScope(
+                      if (_scaleStart == null || _focalWorldAtStart == null) {
+                        return;
+                      }
+
+                      final proposed = _scaleStart! * details.scale;
+                      _controller!
+                          .setScale(proposed, focalWorld: _focalWorldAtStart!);
+
+                      final currentScreen =
+                          _controller!.worldToScreen(_focalWorldAtStart!);
+                      final screenDelta =
+                          details.localFocalPoint - currentScreen;
+                      final correction =
+                          _controller!.deltaScreenToWorld(screenDelta);
+                      _controller!.translateWorld(correction);
+                    } else {
+                      final worldDelta = _controller!
+                          .deltaScreenToWorld(details.focalPointDelta);
+                      if (worldDelta == Offset.zero) return;
+                      _controller!.translateWorld(worldDelta);
+                    }
+                  },
+                  onScaleEnd: (_) {
+                    _scaleStart = null;
+                    _focalWorldAtStart = null;
+                  },
+                  child: const SizedBox.expand(),
+                ),
+              ),
+
+            CanvasKitScope(
+              transform: transform,
+              scale: scale,
+              controller: _controller!,
+              transformRevision: _controller!.transformRevision,
+              child: SimpleCanvas(
                 transform: transform,
                 scale: scale,
+                viewportSize: viewportSize,
                 controller: _controller!,
-                transformRevision: _controller!.transformRevision,
-                child: SimpleCanvas(
-                  transform: transform,
-                  scale: scale,
-                  viewportSize: viewportSize,
-                  controller: _controller!,
-                  onRenderStats: widget.onRenderStats,
-                  children: widget.children,
-                ),
+                onRenderStats: widget.onRenderStats,
+                children: widget.children,
               ),
-            ],
-          ),
-        );
-      }),
-    );
+            ),
+          ],
+        ),
+      );
+    });
   }
 
   void _onControllerChanged() {
