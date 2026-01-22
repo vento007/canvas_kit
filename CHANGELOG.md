@@ -1,3 +1,11 @@
+## 0.6.0 - 2026-01-22
+
+Breaking change:
+- Remove internal Scaffold from CanvasKit; background is now controlled by the parent (wrap in Scaffold/Material if needed).
+
+Demo:
+- Add transparent background demo to show CanvasKit no longer paints a default background.
+
 ## 0.5.3 - 2025-12-12
 
 Performance and rendering improvements:

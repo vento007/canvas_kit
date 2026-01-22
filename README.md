@@ -774,6 +774,7 @@ flutter run
 - **Interactive Demo** - Basic draggable nodes with package-owned gestures
 - **Programmatic Demo** - Custom gesture handling and camera controls  
 - **Bounds Demo** - Constrained panning and auto-fit functionality
+- **Transparent Background Demo** - Shows CanvasKit is transparent and the parent controls the backdrop
 - **Node Editor Demo** - Complex UI with connection wires and custom painting
 - **Snake Demo** - Animated content and camera following
 
