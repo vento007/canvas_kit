@@ -1,7 +1,7 @@
 import 'dart:math' as math;
 
 import 'package:flutter/gestures.dart';
-import 'package:flutter/material.dart';
+import 'package:flutter/widgets.dart';
 import 'package:vector_math/vector_math_64.dart' show Matrix4, Vector3;
 
 bool _nearZero(double v, {double eps = 1e-9}) => v.abs() <= eps;
@@ -501,7 +501,8 @@ class _CanvasKitState extends State<CanvasKit> {
 
             if (widget.gestureOverlayBuilder != null)
               Positioned.fill(
-                  child: widget.gestureOverlayBuilder!(transform, _controller!)),
+                  child:
+                      widget.gestureOverlayBuilder!(transform, _controller!)),
 
             if (!(widget.interactionMode == InteractionMode.programmatic &&
                 widget.gestureOverlayBuilder != null))
@@ -521,9 +522,8 @@ class _CanvasKitState extends State<CanvasKit> {
                     if (widget.interactionMode == InteractionMode.interactive) {
                       final pointerCount = details.pointerCount;
                       if (pointerCount <= 1) {
-                        _controller!.translateWorld(
-                            _controller!.deltaScreenToWorld(
-                                details.focalPointDelta));
+                        _controller!.translateWorld(_controller!
+                            .deltaScreenToWorld(details.focalPointDelta));
                         return;
                       }
 
@@ -539,8 +539,8 @@ class _CanvasKitState extends State<CanvasKit> {
                           _controller!.worldToScreen(_focalWorldAtStart!);
                       final screenDelta =
                           details.localFocalPoint - currentScreen;
-                      final correction =
-                          _controller!.deltaScreenToWorld(screenDelta);
+                      final correction = _controller!.deltaScreenToWorld(
+                          screenDelta);
                       _controller!.translateWorld(correction);
                     } else {
                       final worldDelta = _controller!
@@ -776,46 +776,52 @@ class SimpleCanvas extends StatelessWidget {
         Rect.fromLTWH(0, 0, viewportSize.width, viewportSize.height)
             .inflate(250.0);
 
+    Offset worldToScreen(Offset worldPoint) {
+      if (controller != null) return controller.worldToScreen(worldPoint);
+      final v = Vector3(worldPoint.dx, worldPoint.dy, 0)..applyMatrix4(transform);
+      return Offset(v.x, v.y);
+    }
+
+    bool isVisible(CanvasItem item) {
+      if (controller?.isDragging(item.id) ?? false) return true;
+      if (item.anchor == CanvasAnchor.world) {
+        if (item.estimatedSize == null) return true;
+        final screenPos = worldToScreen(item.worldPosition);
+        final itemScale = item.lockZoom ? 1.0 : scale;
+        final rect = Rect.fromLTWH(
+          screenPos.dx,
+          screenPos.dy,
+          item.estimatedSize!.width * itemScale,
+          item.estimatedSize!.height * itemScale,
+        );
+        return screenVisible.overlaps(rect);
+      }
+      final point = item.viewportPosition ?? Offset.zero;
+      if (item.estimatedSize != null) {
+        final shouldScale = item.scaleWithZoom && !item.lockZoom;
+        final w = item.estimatedSize!.width * (shouldScale ? scale : 1.0);
+        final h = item.estimatedSize!.height * (shouldScale ? scale : 1.0);
+        return screenVisible.overlaps(Rect.fromLTWH(point.dx, point.dy, w, h));
+      }
+      return true;
+    }
+
     final List<Widget> worldItems = <Widget>[];
     final List<Widget> viewportItems = <Widget>[];
     int visibleWorldCount = 0;
     int visibleViewportCount = 0;
 
     for (final item in children) {
-      final bool visible;
-      if (controller?.isDragging(item.id) ?? false) {
-        visible = true;
-      } else if (item.anchor == CanvasAnchor.world) {
-        if (item.estimatedSize != null) {
-          final rect = Rect.fromLTWH(
-            item.worldPosition.dx,
-            item.worldPosition.dy,
-            item.estimatedSize!.width,
-            item.estimatedSize!.height,
-          );
-          visible = worldVisible.overlaps(rect);
-        } else {
-          visible = worldVisible.contains(item.worldPosition);
-        }
-      } else {
-        final point = item.viewportPosition ?? Offset.zero;
-        if (item.estimatedSize != null) {
-          final shouldScale = item.scaleWithZoom && !item.lockZoom;
-          final w = item.estimatedSize!.width * (shouldScale ? scale : 1.0);
-          final h = item.estimatedSize!.height * (shouldScale ? scale : 1.0);
-          visible = screenVisible.overlaps(Rect.fromLTWH(point.dx, point.dy, w, h));
-        } else {
-          visible = screenVisible.contains(point);
-        }
-      }
+      final visible = isVisible(item);
 
       if (!visible) continue;
 
       if (item.anchor == CanvasAnchor.world) {
         Widget visual = item.child;
-        if (item.lockZoom) {
+        final itemScale = item.lockZoom ? 1.0 : scale;
+        if (itemScale != 1.0) {
           visual = Transform.scale(
-            scale: 1.0 / scale,
+            scale: itemScale,
             alignment: Alignment.topLeft,
             child: visual,
           );
@@ -834,10 +840,11 @@ class SimpleCanvas extends StatelessWidget {
             child: visual,
           );
         }
+        final screenPos = worldToScreen(item.worldPosition);
         worldItems.add(Positioned(
           key: ValueKey('item-${item.id}'),
-          left: item.worldPosition.dx,
-          top: item.worldPosition.dy,
+          left: screenPos.dx,
+          top: screenPos.dy,
           child: content,
         ));
         visibleWorldCount++;
@@ -887,13 +894,9 @@ class SimpleCanvas extends StatelessWidget {
     return Stack(
       clipBehavior: Clip.none,
       children: [
-        Transform(
-          transform: transform,
-          alignment: Alignment.topLeft,
-          child: Stack(
-            clipBehavior: Clip.none,
-            children: worldItems,
-          ),
+        Stack(
+          clipBehavior: Clip.none,
+          children: worldItems,
         ),
         Stack(
           clipBehavior: Clip.none,
@@ -988,8 +991,9 @@ class _DraggableWrapperState extends State<_DraggableWrapper> {
       onPanUpdate: (details) {
         if (widget.anchor == CanvasAnchor.world) {
           if (widget.onWorldMoved == null) return;
-          // With the world layer transformed, gesture deltas are already in world-space.
-          final worldDelta = details.delta;
+          final worldDelta =
+              widget.controller?.deltaScreenToWorld(details.delta) ??
+                  details.delta;
           final nextPos = _dragStartWorldPos + worldDelta;
           widget.onWorldMoved?.call(nextPos);
           _dragStartWorldPos = nextPos;
