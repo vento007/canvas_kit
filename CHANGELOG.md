@@ -6,7 +6,12 @@ Breaking change:
 Demo:
 - Add transparent background demo to show CanvasKit no longer paints a default background.
 
-## 0.5.3 - 2025-12-12
+## 0.5.4 - 2025-12-25
+
+Fix:
+- Impossible to interact with widgets in negative coordinates.
+
+## 0.5.3 - 2025-12-15
 
 Performance and rendering improvements:
 - Reduce rebuilds during drag by rebuilding only on transform changes (`CanvasKitController.transformRevision`)
