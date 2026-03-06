@@ -1,3 +1,9 @@
+## 0.6.1 - 2026-03-06
+
+Fix:
+- Re-add the 0.5.4 interaction fix that was accidentally removed.
+- Widgets in negative coordinates are interactive again.
+
 ## 0.6.0 - 2026-01-22
 
 Breaking change:
